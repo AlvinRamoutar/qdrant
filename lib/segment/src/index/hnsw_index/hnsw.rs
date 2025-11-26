@@ -231,6 +231,7 @@ impl HNSWIndex {
             stopped,
             hnsw_global_config,
             feature_flags,
+            progress_span: _,
         } = build_args;
 
         fs::create_dir_all(path)?;

@@ -9,6 +9,7 @@ use common::budget::ResourceBudget;
 use common::counter::hardware_accumulator::HwMeasurementAcc;
 use common::counter::hardware_counter::HardwareCounterCell;
 use common::panic;
+use common::progress_tracker::{ProgressView, new_progress_tracker};
 use common::save_on_disk::SaveOnDisk;
 use itertools::Itertools;
 use parking_lot::Mutex;
@@ -16,6 +17,7 @@ use segment::common::operation_error::{OperationError, OperationResult};
 use segment::index::hnsw_index::num_rayon_threads;
 use segment::types::{QuantizationConfig, SeqNumberType};
 use shard::wal::WalError;
+use slab::Slab;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex as TokioMutex, oneshot};
@@ -97,6 +99,8 @@ pub struct UpdateHandler {
     pub optimizers: Arc<Vec<Arc<Optimizer>>>,
     /// Log of optimizer statuses
     optimizers_log: Arc<Mutex<TrackerLog>>,
+    /// Progress tracker for optimizations
+    pub(super) progress_tracker: Arc<Mutex<Slab<ProgressView>>>,
     /// Total number of optimized points since last start
     total_optimized_points: Arc<AtomicUsize>,
     /// Global CPU budget in number of cores for all optimization tasks.
@@ -172,6 +176,7 @@ impl UpdateHandler {
             update_worker: None,
             optimizer_worker: None,
             optimizers_log,
+            progress_tracker: Arc::new(Mutex::new(Slab::new())),
             total_optimized_points,
             optimizer_resource_budget,
             flush_worker: None,
@@ -201,6 +206,7 @@ impl UpdateHandler {
             self.wal.clone(),
             self.optimization_handles.clone(),
             self.optimizers_log.clone(),
+            self.progress_tracker.clone(),
             self.total_optimized_points.clone(),
             self.optimizer_resource_budget.clone(),
             self.max_optimization_threads,
@@ -318,6 +324,7 @@ impl UpdateHandler {
     pub(crate) fn launch_optimization<F>(
         optimizers: Arc<Vec<Arc<Optimizer>>>,
         optimizers_log: Arc<Mutex<TrackerLog>>,
+        progress_tracker: Arc<Mutex<Slab<ProgressView>>>,
         total_optimized_points: Arc<AtomicUsize>,
         optimizer_resource_budget: &ResourceBudget,
         segments: LockedSegmentHolder,
@@ -397,6 +404,16 @@ impl UpdateHandler {
                 let callback = callback.clone();
                 let is_optimization_failed = is_optimization_failed.clone();
 
+                let (progress_view, progress_span) = new_progress_tracker();
+                let progress_guard = {
+                    // Add view to the tracker and cleanup on drop
+                    let key = progress_tracker.lock().insert(progress_view);
+                    let progress_tracker = Arc::clone(&progress_tracker);
+                    scopeguard::guard((), move |()| {
+                        progress_tracker.lock().remove(key);
+                    })
+                };
+
                 let handle = spawn_stoppable(
                     // Stoppable task
                     {
@@ -409,13 +426,16 @@ impl UpdateHandler {
                             optimizers_log.lock().register(tracker);
 
                             // Optimize and handle result
-                            match optimizer.as_ref().optimize(
+                            let result = optimizer.as_ref().optimize(
                                 segments.clone(),
                                 nsi,
                                 permit,
                                 resource_budget,
                                 stopped,
-                            ) {
+                                progress_span,
+                            );
+                            drop(progress_guard);
+                            match result {
                                 // Perform some actions when optimization if finished
                                 Ok(optimized_points) => {
                                     let is_optimized = optimized_points > 0;
@@ -553,6 +573,7 @@ impl UpdateHandler {
         segments: LockedSegmentHolder,
         optimization_handles: Arc<TokioMutex<Vec<StoppableTaskHandle<bool>>>>,
         optimizers_log: Arc<Mutex<TrackerLog>>,
+        progress_tracker: Arc<Mutex<Slab<ProgressView>>>,
         total_optimized_points: Arc<AtomicUsize>,
         optimizer_resource_budget: &ResourceBudget,
         sender: Sender<OptimizerSignal>,
@@ -561,6 +582,7 @@ impl UpdateHandler {
         let mut new_handles = Self::launch_optimization(
             optimizers.clone(),
             optimizers_log,
+            progress_tracker,
             total_optimized_points,
             optimizer_resource_budget,
             segments.clone(),
@@ -619,6 +641,7 @@ impl UpdateHandler {
         wal: LockedWal,
         optimization_handles: Arc<TokioMutex<Vec<StoppableTaskHandle<bool>>>>,
         optimizers_log: Arc<Mutex<TrackerLog>>,
+        progress_tracker: Arc<Mutex<Slab<ProgressView>>>,
         total_optimized_points: Arc<AtomicUsize>,
         optimizer_resource_budget: ResourceBudget,
         max_handles: Option<usize>,
@@ -745,6 +768,7 @@ impl UpdateHandler {
                 segments.clone(),
                 optimization_handles.clone(),
                 optimizers_log.clone(),
+                progress_tracker.clone(),
                 total_optimized_points.clone(),
                 &optimizer_resource_budget,
                 sender.clone(),

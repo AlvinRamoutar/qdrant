@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use common::budget::ResourceBudget;
 use common::counter::hardware_counter::HardwareCounterCell;
+use common::progress_tracker::ProgressView;
 use common::save_on_disk::SaveOnDisk;
 use futures::future::join_all;
 use itertools::Itertools;
@@ -24,6 +25,7 @@ use rand::Rng;
 use segment::data_types::vectors::only_default_vector;
 use segment::index::hnsw_index::num_rayon_threads;
 use segment::types::{Distance, PointIdType};
+use slab::Slab;
 use tempfile::Builder;
 use tokio::time::{Instant, sleep};
 
@@ -74,6 +76,7 @@ async fn test_optimization_process() {
     let handles = UpdateHandler::launch_optimization(
         optimizers.clone(),
         optimizers_log.clone(),
+        Arc::new(Mutex::new(Slab::new())),
         total_optimized_points.clone(),
         &ResourceBudget::default(),
         segments.clone(),
@@ -117,6 +120,7 @@ async fn test_optimization_process() {
     let handles = UpdateHandler::launch_optimization(
         optimizers.clone(),
         optimizers_log.clone(),
+        Arc::new(Mutex::new(Slab::new())),
         total_optimized_points.clone(),
         &ResourceBudget::default(),
         segments.clone(),
@@ -174,6 +178,7 @@ async fn test_cancel_optimization() {
     let handles = UpdateHandler::launch_optimization(
         optimizers.clone(),
         optimizers_log.clone(),
+        Arc::new(Mutex::new(Slab::new())),
         total_optimized_points.clone(),
         &ResourceBudget::default(),
         segments.clone(),

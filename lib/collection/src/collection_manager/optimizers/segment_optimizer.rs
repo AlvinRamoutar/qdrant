@@ -7,6 +7,7 @@ use common::budget::{ResourceBudget, ResourcePermit};
 use common::bytes::bytes_to_human;
 use common::counter::hardware_counter::HardwareCounterCell;
 use common::disk::dir_disk_size;
+use common::progress_tracker::ProgressSpanBranch;
 use fs_err as fs;
 use io::storage_version::StorageVersion;
 use itertools::Itertools;
@@ -419,6 +420,7 @@ pub trait SegmentOptimizer {
         resource_budget: ResourceBudget,
         stopped: &AtomicBool,
         hw_counter: &HardwareCounterCell,
+        progress_span: ProgressSpanBranch,
     ) -> CollectionResult<Segment> {
         let mut segment_builder = self.optimized_segment_builder(optimizing_segments)?;
 
@@ -528,8 +530,13 @@ pub trait SegmentOptimizer {
             })?;
 
         let mut rng = rand::rng();
-        let mut optimized_segment: Segment =
-            segment_builder.build(indexing_permit, stopped, &mut rng, hw_counter)?;
+        let mut optimized_segment: Segment = segment_builder.build(
+            indexing_permit,
+            stopped,
+            &mut rng,
+            hw_counter,
+            progress_span,
+        )?;
 
         // Delete points
         let deleted_points_snapshot = self.proxy_deleted_points(proxies);
@@ -597,6 +604,7 @@ pub trait SegmentOptimizer {
         permit: ResourcePermit,
         resource_budget: ResourceBudget,
         stopped: &AtomicBool,
+        progress_span: ProgressSpanBranch,
     ) -> CollectionResult<usize> {
         check_process_stopped(stopped)?;
 
@@ -723,6 +731,7 @@ pub trait SegmentOptimizer {
             resource_budget,
             stopped,
             &hw_counter,
+            progress_span,
         );
         let (optimized_segment, mut write_segments_guard) = match result {
             Ok(segment) => segment,
@@ -841,6 +850,7 @@ pub trait SegmentOptimizer {
         resource_budget: ResourceBudget,
         stopped: &AtomicBool,
         hw_counter: &HardwareCounterCell,
+        progress_span: ProgressSpanBranch,
     ) -> CollectionResult<(
         Segment,
         RwLockWriteGuard<'a, parking_lot::RawRwLock, SegmentHolder>,
@@ -856,6 +866,7 @@ pub trait SegmentOptimizer {
             resource_budget,
             stopped,
             hw_counter,
+            progress_span,
         )?;
 
         // Avoid unnecessary point removing in the critical section:

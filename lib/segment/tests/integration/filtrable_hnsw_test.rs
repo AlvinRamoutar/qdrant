@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 use common::budget::ResourcePermit;
 use common::counter::hardware_counter::HardwareCounterCell;
 use common::flags::FeatureFlags;
+use common::progress_tracker::ProgressSpanBranch;
 use common::types::{PointOffsetType, TelemetryDetail};
 use itertools::Itertools;
 use ordered_float::OrderedFloat;
@@ -167,6 +168,7 @@ fn _test_filterable_hnsw(
             stopped: &stopped,
             hnsw_global_config: &HnswGlobalConfig::default(),
             feature_flags: FeatureFlags::default(),
+            progress_span: ProgressSpanBranch::new_for_test(),
         },
     )
     .unwrap();

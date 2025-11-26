@@ -1,7 +1,7 @@
 use std::ops::Deref as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use atomic_refcell::{AtomicRef, AtomicRefCell};
@@ -231,7 +231,7 @@ impl HNSWIndex {
             stopped,
             hnsw_global_config,
             feature_flags,
-            progress_span: _,
+            progress_span,
         } = build_args;
 
         fs::create_dir_all(path)?;
@@ -263,6 +263,7 @@ impl HNSWIndex {
             total_vector_count,
         );
 
+        let span = progress_span.make_branch("Evaluating old candidates");
         let old_index = old_indices
             .iter()
             .filter_map(|old_index| {
@@ -277,6 +278,7 @@ impl HNSWIndex {
                 )
             })
             .max_by_key(|old_index| old_index.valid_points);
+        drop(span);
 
         // Build main index graph
         let deleted_bitslice = vector_storage_ref.deleted_vector_bitslice();
@@ -393,6 +395,8 @@ impl HNSWIndex {
 
             let mut ids_iter = id_tracker_ref.iter_internal_excluding(deleted_bitslice);
             if let Some(old_index) = old_index {
+                let _span = progress_span.make_branch("Migrating old graph");
+
                 let timer = std::time::Instant::now();
 
                 let mut healer = GraphLayersHealer::new(
@@ -423,6 +427,9 @@ impl HNSWIndex {
 
             let timer = std::time::Instant::now();
 
+            let span = progress_span.make_leaf("Building main graph", ids.len() as u64);
+            let progress = span.progress().deref();
+
             let insert_point = |vector_id| {
                 check_process_stopped(stopped)?;
                 // No need to accumulate hardware, since this is an internal operation
@@ -438,6 +445,8 @@ impl HNSWIndex {
                 )?;
 
                 graph_layers_builder.link_new_point(vector_id, points_scorer);
+
+                progress.fetch_add(1, Ordering::Relaxed);
 
                 Ok::<_, OperationError>(())
             };
@@ -463,6 +472,8 @@ impl HNSWIndex {
         let indexed_fields = payload_index_ref.indexed_fields();
 
         if payload_m.m > 0 && !indexed_fields.is_empty() {
+            let _span = progress_span.make_branch("Building additional links");
+
             // Calculate true average number of links per vertex in the HNSW graph
             // to better estimate percolation threshold
             let average_links_per_0_level =
@@ -530,6 +541,7 @@ impl HNSWIndex {
             let mut gpu_insert_context = None;
 
             for (index_pos, (field, _)) in indexed_fields.into_iter().enumerate() {
+                let _span = progress_span.make_branch(&format!("Field {field}"));
                 debug!("building additional index for field {}", &field);
 
                 let is_tenant = payload_index_ref.is_tenant(&field);

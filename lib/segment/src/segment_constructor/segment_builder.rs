@@ -581,6 +581,7 @@ impl SegmentBuilder {
             // Arc permit to share it with each vector store
             let permit = Arc::new(permit);
 
+            let span = progress_span.make_branch("vector_indices");
             for (vector_name, vector_config) in &segment_config.vector_data {
                 let vector_storage = vector_storages_arc.remove(vector_name).unwrap();
                 let quantized_vectors =
@@ -603,7 +604,7 @@ impl SegmentBuilder {
                         rng,
                         hnsw_global_config: &hnsw_global_config,
                         feature_flags: feature_flags(),
-                        progress_span: progress_span.make_branch(vector_name),
+                        progress_span: span.make_branch(vector_name),
                     },
                 )?;
 
@@ -621,6 +622,7 @@ impl SegmentBuilder {
                 // So we may clear unconditionally
                 index.clear_cache()?;
             }
+            drop(span);
 
             for (vector_name, sparse_vector_config) in &segment_config.sparse_vector_data {
                 let vector_index_path = get_vector_index_path(temp_dir.path(), vector_name);

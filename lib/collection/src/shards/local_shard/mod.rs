@@ -1014,6 +1014,15 @@ impl LocalShard {
         &self.update_tracker
     }
 
+    pub async fn get_indexing_progress(&self) -> Vec<common::progress_tracker::ProgressEntry> {
+        let update_handler = self.update_handler.lock().await;
+        let progress_tracker = update_handler.progress_tracker.lock();
+        progress_tracker
+            .iter()
+            .filter_map(|(_, view)| view.snapshot())
+            .collect()
+    }
+
     /// Get the recovery point for the current shard
     ///
     /// This is sourced from the last seen clocks from other nodes that we know about.

@@ -1,12 +1,14 @@
 use std::ops::Deref as _;
 use std::time::Duration;
 
+use common::progress_tracker::ProgressEntry;
 use common::types::TelemetryDetail;
 use segment::types::SizeStats;
 use shard::common::stopping_guard::StoppingGuard;
 
 use crate::operations::types::{CollectionResult, OptimizersStatus};
 use crate::shards::replica_set::ShardReplicaSet;
+use crate::shards::shard::Shard;
 use crate::shards::telemetry::{PartialSnapshotTelemetry, ReplicaSetTelemetry};
 
 impl ShardReplicaSet {
@@ -68,5 +70,18 @@ impl ShardReplicaSet {
         };
 
         local.get_size_stats().await
+    }
+
+    pub async fn get_indexing_progress(&self) -> Vec<ProgressEntry> {
+        let local_shard = self.local.read().await;
+        let Some(local) = local_shard.deref() else {
+            return Vec::new();
+        };
+        match local {
+            Shard::Local(local_shard) => local_shard.get_indexing_progress().await,
+            Shard::Proxy(_) | Shard::ForwardProxy(_) | Shard::QueueProxy(_) | Shard::Dummy(_) => {
+                Vec::new()
+            }
+        }
     }
 }

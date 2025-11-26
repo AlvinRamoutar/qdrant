@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use actix_web::rt::time::Instant;
@@ -5,12 +6,14 @@ use actix_web::{HttpResponse, Responder, delete, get, patch, post, put, web};
 use actix_web_validator::{Json, Path, Query};
 use collection::operations::cluster_ops::ClusterOperations;
 use collection::operations::verification::new_unchecked_verification_pass;
+use common::progress_tracker::ProgressEntry;
 use serde::Deserialize;
 use storage::content_manager::collection_meta_ops::{
     ChangeAliasesOperation, CollectionMetaOperations, CreateCollection, CreateCollectionOperation,
     DeleteCollectionOperation, UpdateCollection, UpdateCollectionOperation,
 };
 use storage::dispatcher::Dispatcher;
+use storage::rbac::AccessRequirements;
 use validator::Validate;
 
 use super::CollectionPath;
@@ -230,6 +233,40 @@ async fn update_collection_cluster(
     process_response(response, timing, None)
 }
 
+#[get("/collections/{name}/indexing_progress")]
+async fn get_indexing_progress(
+    dispatcher: web::Data<Dispatcher>,
+    collection: Path<CollectionPath>,
+    ActixAccess(access): ActixAccess,
+) -> impl Responder {
+    let timing = Instant::now();
+
+    let future = async {
+        let collection_pass =
+            access.check_collection_access(&collection.name, AccessRequirements::new())?;
+
+        let pass = new_unchecked_verification_pass();
+        let toc = dispatcher.toc(&access, &pass);
+
+        let collection = toc.get_collection(&collection_pass).await?;
+
+        let shards_holder_arc = collection.shards_holder();
+        let shards_holder = shards_holder_arc.read().await;
+        let mut result: HashMap<u32, Vec<ProgressEntry>> = HashMap::new();
+
+        for (shard_id, replica_set) in shards_holder.get_shards() {
+            let progress = replica_set.get_indexing_progress().await;
+            if !progress.is_empty() {
+                result.insert(shard_id, progress);
+            }
+        }
+
+        Ok(result)
+    };
+
+    helpers::process_response(future.await, timing, None)
+}
+
 // Configure services
 pub fn config_collections_api(cfg: &mut web::ServiceConfig) {
     // Ordering of services is important for correct path pattern matching
@@ -238,6 +275,7 @@ pub fn config_collections_api(cfg: &mut web::ServiceConfig) {
         .service(get_collections)
         .service(get_collection)
         .service(get_collection_existence)
+        .service(get_indexing_progress)
         .service(create_collection)
         .service(update_collection)
         .service(delete_collection)

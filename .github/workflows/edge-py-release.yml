@@ -108,7 +108,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --interpreter ${{ steps.setup-python.output.python-path }} --out dist
+          args: --release --interpreter ${{ steps.setup-python.outputs.python-path }} --out dist
           working-directory: lib/edge/python
           target: ${{ matrix.target }}
 
@@ -154,7 +154,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --interpreter ${{ steps.setup-python.output.python-path }} --out dist
+          args: --release --interpreter ${{ steps.setup-python.outputs.python-path }} --out dist
           working-directory: lib/edge/python
           target: ${{ matrix.target }}
 

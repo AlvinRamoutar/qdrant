@@ -13,6 +13,7 @@ pub struct Config {
     pub span_events: Option<HashSet<config::SpanEvent>>,
     pub format: Option<config::LogFormat>,
     pub color: Option<config::Color>,
+    pub audit_log: Option<bool>,
 }
 
 impl Config {
@@ -22,12 +23,14 @@ impl Config {
             span_events,
             format,
             color,
+            audit_log,
         } = other;
 
         self.log_level.replace_if_some(log_level);
         self.span_events.replace_if_some(span_events);
         self.format.replace_if_some(format);
         self.color.replace_if_some(color);
+        self.audit_log.replace_if_some(audit_log);
     }
 }
 

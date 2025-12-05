@@ -19,6 +19,7 @@ pub struct Config {
     pub format: Option<config::LogFormat>,
     pub span_events: Option<HashSet<config::SpanEvent>>,
     pub buffer_size_bytes: Option<usize>,
+    pub audit_log_path: Option<String>,
 }
 
 impl Config {
@@ -30,6 +31,7 @@ impl Config {
             span_events,
             format,
             buffer_size_bytes,
+            audit_log_path,
         } = other;
 
         self.enabled.replace_if_some(enabled);
@@ -38,6 +40,7 @@ impl Config {
         self.span_events.replace_if_some(span_events);
         self.format.replace_if_some(format);
         self.buffer_size_bytes.replace_if_some(buffer_size_bytes);
+        self.audit_log_path.replace_if_some(audit_log_path);
     }
 }
 

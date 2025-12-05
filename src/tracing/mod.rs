@@ -1,3 +1,4 @@
+pub mod audit_event;
 pub mod config;
 pub mod default;
 pub mod handle;
@@ -12,6 +13,7 @@ use std::str::FromStr as _;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{filter, reload};
 
+pub use self::audit_event::init_audit_log_path;
 pub use self::config::LoggerConfig;
 pub use self::handle::LoggerHandle;
 
@@ -66,6 +68,11 @@ pub fn setup(mut config: config::LoggerConfig) -> anyhow::Result<LoggerHandle> {
         "`console-subscriber` requires manually enabling \
          `--cfg tokio_unstable` rust flags during compilation!"
     );
+
+    // Initialize audit logger with path if configured, otherwise assume no auditing
+    // If this fails, startup should fail since auditing is enabled for what we can
+    // assume are compliance reasons
+    init_audit_log_path(config.on_disk.audit_log_path.clone())?;
 
     // Use `tracy` or `tracing-tracy` feature to enable `tracing-tracy`
     #[cfg(feature = "tracing-tracy")]

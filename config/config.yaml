@@ -13,6 +13,10 @@ log_level: INFO
 #     # Logging format, supports `text` and `json`
 #     format: text
 #     buffer_size_bytes: 1024
+#     # Optional: Path to audit log file for security/compliance audit events
+#     # If specified, audit logging is assumed to be ENABLED
+#     # Audit events will be written as JSON lines, rotated by day
+#     audit_log_path: /path/to/audit_logs/
 
 storage:
   # Where to store all the data

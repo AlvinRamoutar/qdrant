@@ -15,14 +15,16 @@ use tokio::time::Instant;
 
 use super::CollectionPath;
 use super::read_params::ReadParams;
-use crate::actix::auth::ActixAccess;
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
 use crate::actix::helpers::{
-    get_request_hardware_counter, process_response, process_response_error,
+    get_request_hardware_counter, log_audit_event, process_response, process_response_error,
 };
+use crate::actix::requester_context::ActixRequesterContext;
 use crate::common::query::{
     do_core_search_points, do_search_batch_points, do_search_point_groups, do_search_points_matrix,
 };
 use crate::settings::ServiceConfig;
+use crate::tracing::audit_event::Status;
 
 #[post("/collections/{name}/points/search")]
 async fn search_points(
@@ -31,8 +33,23 @@ async fn search_points(
     request: Json<SearchRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "search_points",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let SearchRequest {
         search_request,
         shard_key,
@@ -41,14 +58,26 @@ async fn search_points(
     let pass = match check_strict_mode(
         &search_request,
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "search_points",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let shard_selection = match shard_key {
@@ -58,7 +87,7 @@ async fn search_points(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -67,7 +96,7 @@ async fn search_points(
 
     let result = do_core_search_points(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &collection_name,
         search_request.into(),
         params.consistency,
         shard_selection,
@@ -83,6 +112,17 @@ async fn search_points(
             .collect_vec()
     });
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "search_points",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(result, timing, request_hw_counter.to_rest_api())
 }
 
@@ -93,8 +133,23 @@ async fn batch_search_points(
     request: Json<SearchRequestBatch>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "batch_search_points",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let requests = request
         .into_inner()
         .searches
@@ -117,19 +172,31 @@ async fn batch_search_points(
     let pass = match check_strict_mode_batch(
         requests.iter().map(|i| &i.0),
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "batch_search_points",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -138,7 +205,7 @@ async fn batch_search_points(
 
     let result = do_search_batch_points(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &collection_name,
         requests,
         params.consistency,
         access,
@@ -158,6 +225,17 @@ async fn batch_search_points(
             .collect_vec()
     });
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "batch_search_points",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(result, timing, request_hw_counter.to_rest_api())
 }
 
@@ -168,8 +246,23 @@ async fn search_point_groups(
     request: Json<SearchGroupsRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "search_point_groups",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let SearchGroupsRequest {
         search_group_request,
         shard_key,
@@ -178,14 +271,26 @@ async fn search_point_groups(
     let pass = match check_strict_mode(
         &search_group_request,
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "search_point_groups",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let shard_selection = match shard_key {
@@ -195,7 +300,7 @@ async fn search_point_groups(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -203,7 +308,7 @@ async fn search_point_groups(
 
     let result = do_search_point_groups(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &collection_name,
         search_group_request,
         params.consistency,
         shard_selection,
@@ -212,6 +317,17 @@ async fn search_point_groups(
         request_hw_counter.get_counter(),
     )
     .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "search_point_groups",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     process_response(result, timing, request_hw_counter.to_rest_api())
 }
@@ -223,8 +339,23 @@ async fn search_points_matrix_pairs(
     request: Json<SearchMatrixRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "search_points_matrix_pairs",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let SearchMatrixRequest {
         search_request,
         shard_key,
@@ -233,14 +364,26 @@ async fn search_points_matrix_pairs(
     let pass = match check_strict_mode(
         &search_request,
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "search_points_matrix_pairs",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let shard_selection = match shard_key {
@@ -250,7 +393,7 @@ async fn search_points_matrix_pairs(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -258,7 +401,7 @@ async fn search_points_matrix_pairs(
 
     let response = do_search_points_matrix(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &collection_name,
         CollectionSearchMatrixRequest::from(search_request),
         params.consistency,
         shard_selection,
@@ -268,6 +411,17 @@ async fn search_points_matrix_pairs(
     )
     .await
     .map(SearchMatrixPairsResponse::from);
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "search_points_matrix_pairs",
+        if response.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     process_response(response, timing, request_hw_counter.to_rest_api())
 }
@@ -279,8 +433,23 @@ async fn search_points_matrix_offsets(
     request: Json<SearchMatrixRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "search_points_matrix_offsets",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let SearchMatrixRequest {
         search_request,
         shard_key,
@@ -289,14 +458,26 @@ async fn search_points_matrix_offsets(
     let pass = match check_strict_mode(
         &search_request,
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "search_points_matrix_offsets",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let shard_selection = match shard_key {
@@ -306,7 +487,7 @@ async fn search_points_matrix_offsets(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -314,7 +495,7 @@ async fn search_points_matrix_offsets(
 
     let response = do_search_points_matrix(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &collection_name,
         CollectionSearchMatrixRequest::from(search_request),
         params.consistency,
         shard_selection,
@@ -324,6 +505,17 @@ async fn search_points_matrix_offsets(
     )
     .await
     .map(SearchMatrixOffsetsResponse::from);
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "search_points_matrix_offsets",
+        if response.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     process_response(response, timing, request_hw_counter.to_rest_api())
 }

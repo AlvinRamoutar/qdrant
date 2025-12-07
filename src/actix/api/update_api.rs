@@ -13,15 +13,18 @@ use storage::dispatcher::Dispatcher;
 use validator::Validate;
 
 use super::CollectionPath;
-use crate::actix::auth::ActixAccess;
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
 use crate::actix::helpers::{
-    get_request_hardware_counter, process_response, process_response_with_inference_usage,
+    get_request_hardware_counter, log_audit_event, process_response,
+    process_response_with_inference_usage,
 };
+use crate::actix::requester_context::ActixRequesterContext;
 use crate::common::inference::params::InferenceParams;
 use crate::common::inference::token::InferenceToken;
 use crate::common::strict_mode::*;
 use crate::common::update::*;
 use crate::settings::ServiceConfig;
+use crate::tracing::audit_event::Status;
 
 #[derive(Deserialize, Validate)]
 struct FieldPath {
@@ -36,14 +39,29 @@ async fn upsert_points(
     operation: Json<PointInsertOperations>,
     params: Query<UpdateParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     inference_token: InferenceToken,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "upsert_points",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operation = operation.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -69,6 +87,17 @@ async fn upsert_points(
         Err(err) => (Err(err), None),
     };
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "upsert_points",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response_with_inference_usage(
         res,
         timing,
@@ -84,13 +113,28 @@ async fn delete_points(
     operation: Json<PointsSelector>,
     params: Query<UpdateParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_points",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operation = operation.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -107,6 +151,17 @@ async fn delete_points(
     )
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_points",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(res, timing, request_hw_counter.to_rest_api())
 }
 
@@ -117,14 +172,29 @@ async fn update_vectors(
     operation: Json<UpdateVectors>,
     params: Query<UpdateParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     inference_token: InferenceToken,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_vectors",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operation = operation.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -149,6 +219,17 @@ async fn update_vectors(
         Err(err) => (Err(err), None),
     };
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_vectors",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response_with_inference_usage(
         res,
         timing,
@@ -164,13 +245,28 @@ async fn delete_vectors(
     operation: Json<DeleteVectors>,
     params: Query<UpdateParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_vectors",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operation = operation.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -187,6 +283,17 @@ async fn delete_vectors(
     )
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_vectors",
+        if response.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(response, timing, request_hw_counter.to_rest_api())
 }
 
@@ -197,13 +304,28 @@ async fn set_payload(
     operation: Json<SetPayload>,
     params: Query<UpdateParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "set_payload",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operation = operation.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -220,6 +342,17 @@ async fn set_payload(
     )
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "set_payload",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(res, timing, request_hw_counter.to_rest_api())
 }
 
@@ -230,13 +363,28 @@ async fn overwrite_payload(
     operation: Json<SetPayload>,
     params: Query<UpdateParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "overwrite_payload",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operation = operation.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -253,6 +401,17 @@ async fn overwrite_payload(
     )
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "overwrite_payload",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(res, timing, request_hw_counter.to_rest_api())
 }
 
@@ -263,13 +422,28 @@ async fn delete_payload(
     operation: Json<DeletePayload>,
     params: Query<UpdateParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_payload",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operation = operation.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -286,6 +460,17 @@ async fn delete_payload(
     )
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_payload",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(res, timing, request_hw_counter.to_rest_api())
 }
 
@@ -296,13 +481,28 @@ async fn clear_payload(
     operation: Json<PointsSelector>,
     params: Query<UpdateParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "clear_payload",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operation = operation.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -319,6 +519,17 @@ async fn clear_payload(
     )
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "clear_payload",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(res, timing, request_hw_counter.to_rest_api())
 }
 
@@ -329,14 +540,29 @@ async fn update_batch(
     operations: Json<UpdateOperations>,
     params: Query<UpdateParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     inference_token: InferenceToken,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_batch",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operations = operations.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -363,6 +589,17 @@ async fn update_batch(
         Err(err) => (Err(err), None),
     };
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_batch",
+        if response_data.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        response_data.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response_with_inference_usage(
         response_data,
         timing,
@@ -377,15 +614,29 @@ async fn create_field_index(
     collection: Path<CollectionPath>,
     operation: Json<CreateFieldIndex>,
     params: Query<UpdateParams>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     service_config: web::Data<ServiceConfig>,
 ) -> impl Responder {
     let timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_field_index",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let operation = operation.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         Some(params.wait),
     );
@@ -401,6 +652,17 @@ async fn create_field_index(
     )
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_field_index",
+        if response.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(
         response, timing,
         None, // Do not report hardware counter for index creation, as it might be not accurate due to consensus
@@ -413,9 +675,22 @@ async fn delete_field_index(
     collection: Path<CollectionPath>,
     field: Path<FieldPath>,
     params: Query<UpdateParams>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
     let timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_field_index",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
 
     let response = do_delete_index(
         dispatcher.into_inner(),
@@ -427,6 +702,18 @@ async fn delete_field_index(
         HwMeasurementAcc::disposable(), // API unmeasured
     )
     .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_field_index",
+        if response.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(response, timing, None)
 }
 

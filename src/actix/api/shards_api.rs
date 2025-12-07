@@ -10,9 +10,11 @@ use tokio::time::Instant;
 
 use crate::actix::api::CollectionPath;
 use crate::actix::api::collections_api::WaitTimeout;
-use crate::actix::auth::ActixAccess;
-use crate::actix::helpers::{self, process_response};
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
+use crate::actix::requester_context::ActixRequesterContext;
+use crate::actix::helpers::{self, process_response, log_audit_event, process_response};
 use crate::common::collections::{do_get_collection_shard_keys, do_update_collection_cluster};
+use crate::tracing::audit_event::Status;
 
 #[get("/collections/{name}/shards")]
 async fn list_shard_keys(
@@ -37,9 +39,23 @@ async fn create_shard_key(
     collection: Path<CollectionPath>,
     request: Json<CreateShardingKey>,
     Query(query): Query<WaitTimeout>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
     let timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_shard_key",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let wait_timeout = query.timeout();
     let dispatcher = dispatcher.into_inner();
 
@@ -51,12 +67,23 @@ async fn create_shard_key(
 
     let response = do_update_collection_cluster(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         operation,
         access,
         wait_timeout,
     )
     .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_shard_key",
+        if response.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     process_response(response, timing, None)
 }
@@ -67,9 +94,23 @@ async fn delete_shard_key(
     collection: Path<CollectionPath>,
     request: Json<DropShardingKey>,
     Query(query): Query<WaitTimeout>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
     let timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_shard_key",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let wait_timeout = query.timeout();
 
     let dispatcher = dispatcher.into_inner();
@@ -81,12 +122,23 @@ async fn delete_shard_key(
 
     let response = do_update_collection_cluster(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         operation,
         access,
         wait_timeout,
     )
     .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_shard_key",
+        if response.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     process_response(response, timing, None)
 }

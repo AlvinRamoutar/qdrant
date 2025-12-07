@@ -105,6 +105,7 @@ fn write_to_audit_file(event: &AuditEvent) {
 #[serde(rename_all = "snake_case")]
 pub enum AuthType {
     ApiKey,
+    ReadOnlyApiKey,
     Jwt,
     Anonymous,
 }

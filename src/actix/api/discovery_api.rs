@@ -11,10 +11,12 @@ use tokio::time::Instant;
 
 use crate::actix::api::CollectionPath;
 use crate::actix::api::read_params::ReadParams;
-use crate::actix::auth::ActixAccess;
-use crate::actix::helpers::{self, get_request_hardware_counter, process_response_error};
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
+use crate::actix::helpers::{self, get_request_hardware_counter, log_audit_event, process_response_error};
+use crate::actix::requester_context::ActixRequesterContext;
 use crate::common::query::do_discover_batch_points;
 use crate::settings::ServiceConfig;
+use crate::tracing::audit_event::Status;
 
 #[post("/collections/{name}/points/discover")]
 async fn discover_points(
@@ -23,8 +25,23 @@ async fn discover_points(
     request: Json<DiscoverRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "discover_points",
+        Status::Accepted,
+        Some(name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let DiscoverRequest {
         discover_request,
         shard_key,
@@ -33,14 +50,26 @@ async fn discover_points(
     let pass = match check_strict_mode(
         &discover_request,
         params.timeout_as_secs(),
-        &collection.name,
+        &name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "discover_points",
+                Status::Failure,
+                Some(name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let shard_selection = match shard_key {
@@ -50,7 +79,7 @@ async fn discover_points(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -60,7 +89,7 @@ async fn discover_points(
     let result = dispatcher
         .toc(&access, &pass)
         .discover(
-            &collection.name,
+            &name,
             discover_request,
             params.consistency,
             shard_selection,
@@ -76,6 +105,17 @@ async fn discover_points(
                 .collect_vec()
         });
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "discover_points",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     helpers::process_response(result, timing, request_hw_counter.to_rest_api())
 }
 
@@ -86,26 +126,53 @@ async fn discover_batch_points(
     request: Json<DiscoverRequestBatch>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "discover_batch_points",
+        Status::Accepted,
+        Some(name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let request = request.into_inner();
 
     let pass = match check_strict_mode_batch(
         request.searches.iter().map(|i| &i.discover_request),
         params.timeout_as_secs(),
-        &collection.name,
+        &name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "discover_batch_points",
+                Status::Failure,
+                Some(name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -113,7 +180,7 @@ async fn discover_batch_points(
 
     let result = do_discover_batch_points(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &name,
         request,
         params.consistency,
         access,
@@ -132,6 +199,17 @@ async fn discover_batch_points(
             })
             .collect_vec()
     });
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "discover_batch_points",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     helpers::process_response(result, timing, request_hw_counter.to_rest_api())
 }

@@ -13,8 +13,9 @@ use tokio::time::Instant;
 
 use super::CollectionPath;
 use super::read_params::ReadParams;
-use crate::actix::auth::ActixAccess;
-use crate::actix::helpers::{self, get_request_hardware_counter};
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
+use crate::actix::helpers::{self, get_request_hardware_counter, log_audit_event};
+use crate::actix::requester_context::ActixRequesterContext;
 use crate::common::inference::params::InferenceParams;
 use crate::common::inference::query_requests_rest::{
     CollectionQueryGroupsRequestWithUsage, CollectionQueryRequestWithUsage,
@@ -23,6 +24,7 @@ use crate::common::inference::query_requests_rest::{
 use crate::common::inference::token::InferenceToken;
 use crate::common::query::do_query_point_groups;
 use crate::settings::ServiceConfig;
+use crate::tracing::audit_event::Status;
 
 #[post("/collections/{name}/points/query")]
 async fn query_points(
@@ -31,9 +33,24 @@ async fn query_points(
     request: Json<QueryRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     inference_token: InferenceToken,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "query_points",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let QueryRequest {
         internal: query_request,
         shard_key,
@@ -41,7 +58,7 @@ async fn query_points(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -65,7 +82,7 @@ async fn query_points(
         let pass = check_strict_mode(
             &request,
             params.timeout_as_secs(),
-            &collection.name,
+            &collection_name,
             &dispatcher,
             &access,
         )
@@ -74,7 +91,7 @@ async fn query_points(
         let points = dispatcher
             .toc(&access, &pass)
             .query_batch(
-                &collection.name,
+                &collection_name,
                 vec![(request, shard_selection)],
                 params.consistency,
                 access,
@@ -94,6 +111,17 @@ async fn query_points(
     }
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "query_points",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     helpers::process_response_with_inference_usage(
         result,
         timing,
@@ -109,14 +137,29 @@ async fn query_points_batch(
     request: Json<QueryRequestBatch>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     inference_token: InferenceToken,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "query_points_batch",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let QueryRequestBatch { searches } = request.into_inner();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -152,7 +195,7 @@ async fn query_points_batch(
         let pass = check_strict_mode_batch(
             batch.iter().map(|i| &i.0),
             params.timeout_as_secs(),
-            &collection.name,
+            &collection_name,
             &dispatcher,
             &access,
         )
@@ -161,7 +204,7 @@ async fn query_points_batch(
         let res = dispatcher
             .toc(&access, &pass)
             .query_batch(
-                &collection.name,
+                &collection_name,
                 batch,
                 params.consistency,
                 access,
@@ -181,6 +224,17 @@ async fn query_points_batch(
     }
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "query_points_batch",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     helpers::process_response_with_inference_usage(
         result,
         timing,
@@ -196,9 +250,24 @@ async fn query_points_groups(
     request: Json<QueryGroupsRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     inference_token: InferenceToken,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "query_points_groups",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let QueryGroupsRequest {
         search_group_request,
         shard_key,
@@ -206,7 +275,7 @@ async fn query_points_groups(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -229,7 +298,7 @@ async fn query_points_groups(
         let pass = check_strict_mode(
             &request,
             params.timeout_as_secs(),
-            &collection.name,
+            &collection_name,
             &dispatcher,
             &access,
         )
@@ -237,7 +306,7 @@ async fn query_points_groups(
 
         let query_result = do_query_point_groups(
             dispatcher.toc(&access, &pass),
-            &collection.name,
+            &collection_name,
             request,
             params.consistency,
             shard_selection,
@@ -249,6 +318,17 @@ async fn query_points_groups(
         Ok(query_result)
     }
     .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "query_points_groups",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     helpers::process_response_with_inference_usage(
         result,

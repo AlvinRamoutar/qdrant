@@ -15,9 +15,11 @@ use validator::Validate;
 
 use super::CollectionPath;
 use crate::actix::api::StrictCollectionPath;
-use crate::actix::auth::ActixAccess;
-use crate::actix::helpers::{self, process_response};
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
+use crate::actix::helpers::{self, log_audit_event, process_response};
+use crate::actix::requester_context::ActixRequesterContext;
 use crate::common::collections::*;
+use crate::tracing::audit_event::Status;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct WaitTimeout {
@@ -34,75 +36,213 @@ impl WaitTimeout {
 #[get("/collections")]
 async fn get_collections(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
+    let timing = Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_collections",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
     // No request to verify
     let pass = new_unchecked_verification_pass();
 
-    helpers::time(do_list_collections(dispatcher.toc(&access, &pass), access)).await
+    let result = do_list_collections(dispatcher.toc(&access, &pass), access).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_collections",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[get("/aliases")]
 async fn get_aliases(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
+    let timing = Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_aliases",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
     // No request to verify
     let pass = new_unchecked_verification_pass();
 
-    helpers::time(do_list_aliases(dispatcher.toc(&access, &pass), access)).await
+    let result = do_list_aliases(dispatcher.toc(&access, &pass), access).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_aliases",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[get("/collections/{name}")]
 async fn get_collection(
     dispatcher: web::Data<Dispatcher>,
     collection: Path<CollectionPath>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
+    let timing = Instant::now();
+    let name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_collection",
+        Status::Accepted,
+        Some(name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // No request to verify
     let pass = new_unchecked_verification_pass();
 
-    helpers::time(do_get_collection(
+    let result = do_get_collection(
         dispatcher.toc(&access, &pass),
         access,
-        &collection.name,
+        &name,
         None,
-    ))
-    .await
+    )
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_collection",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[get("/collections/{name}/exists")]
 async fn get_collection_existence(
     dispatcher: web::Data<Dispatcher>,
     collection: Path<CollectionPath>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
+    let timing = Instant::now();
+    let name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_collection_existence",
+        Status::Accepted,
+        Some(name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // No request to verify
     let pass = new_unchecked_verification_pass();
 
-    helpers::time(do_collection_exists(
+    let result = do_collection_exists(
         dispatcher.toc(&access, &pass),
         access,
-        &collection.name,
-    ))
-    .await
+        &name,
+    )
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_collection_existence",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[get("/collections/{name}/aliases")]
 async fn get_collection_aliases(
     dispatcher: web::Data<Dispatcher>,
     collection: Path<CollectionPath>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
+    let timing = Instant::now();
+    let name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_collection_aliases",
+        Status::Accepted,
+        Some(name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // No request to verify
     let pass = new_unchecked_verification_pass();
 
-    helpers::time(do_list_collection_aliases(
+    let result = do_list_collection_aliases(
         dispatcher.toc(&access, &pass),
         access,
-        &collection.name,
-    ))
-    .await
+        &name,
+    )
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_collection_aliases",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[put("/collections/{name}")]
@@ -111,11 +251,23 @@ async fn create_collection(
     collection: Path<StrictCollectionPath>,
     operation: Json<CreateCollection>,
     Query(query): Query<WaitTimeout>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
     let timing = Instant::now();
     let create_collection_op =
         CreateCollectionOperation::new(collection.name.clone(), operation.into_inner());
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_collection",
+        Status::Accepted,
+        Some(collection.name.clone()),
+        None,
+        None,
+        None,
+    );
 
     let Ok(create_collection_op) = create_collection_op else {
         return process_response(create_collection_op, timing, None);
@@ -128,6 +280,18 @@ async fn create_collection(
             query.timeout(),
         )
         .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_collection",
+        if matches!(response, Ok(true)) { Status::Success } else { Status::Failure },
+        Some(collection.name.clone()),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)), 
+    );
+
     process_response(response, timing, None)
 }
 
@@ -137,20 +301,45 @@ async fn update_collection(
     collection: Path<CollectionPath>,
     operation: Json<UpdateCollection>,
     Query(query): Query<WaitTimeout>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
     let timing = Instant::now();
     let name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_collection",
+        Status::Accepted,
+        Some(name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let response = dispatcher
         .submit_collection_meta_op(
             CollectionMetaOperations::UpdateCollection(UpdateCollectionOperation::new(
-                name,
+                name.clone(),
                 operation.into_inner(),
             )),
             access,
             query.timeout(),
         )
         .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_collection",
+        if matches!(response, Ok(true)) { Status::Success } else { Status::Failure },
+        Some(name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(response, timing, None)
 }
 
@@ -159,18 +348,44 @@ async fn delete_collection(
     dispatcher: web::Data<Dispatcher>,
     collection: Path<CollectionPath>,
     Query(query): Query<WaitTimeout>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
     let timing = Instant::now();
+    let name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_collection",
+        Status::Accepted,
+        Some(name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let response = dispatcher
         .submit_collection_meta_op(
             CollectionMetaOperations::DeleteCollection(DeleteCollectionOperation(
-                collection.name.clone(),
+                name.clone(),
             )),
             access,
             query.timeout(),
         )
         .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_collection",
+        if matches!(response, Ok(true)) { Status::Success } else { Status::Failure },
+        Some(name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(response, timing, None)
 }
 
@@ -179,9 +394,22 @@ async fn update_aliases(
     dispatcher: web::Data<Dispatcher>,
     operation: Json<ChangeAliasesOperation>,
     Query(query): Query<WaitTimeout>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
     let timing = Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_aliases",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
     let response = dispatcher
         .submit_collection_meta_op(
             CollectionMetaOperations::ChangeAliases(operation.0),
@@ -189,6 +417,18 @@ async fn update_aliases(
             query.timeout(),
         )
         .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_aliases",
+        if matches!(response, Ok(true)) { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(response, timing, None)
 }
 
@@ -196,17 +436,45 @@ async fn update_aliases(
 async fn get_cluster_info(
     dispatcher: web::Data<Dispatcher>,
     collection: Path<CollectionPath>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = Instant::now();
+    let name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_cluster_info",
+        Status::Accepted,
+        Some(name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // No request to verify
     let pass = new_unchecked_verification_pass();
 
-    helpers::time(do_get_collection_cluster(
+    let result = do_get_collection_cluster(
         dispatcher.toc(&access, &pass),
         access,
-        &collection.name,
-    ))
-    .await
+        &name,
+    )
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_cluster_info",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[post("/collections/{name}/cluster")]
@@ -215,18 +483,44 @@ async fn update_collection_cluster(
     collection: Path<CollectionPath>,
     operation: Json<ClusterOperations>,
     Query(query): Query<WaitTimeout>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
     let timing = Instant::now();
     let wait_timeout = query.timeout();
+    let name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_collection_cluster",
+        Status::Accepted,
+        Some(name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let response = do_update_collection_cluster(
         &dispatcher.into_inner(),
-        collection.name.clone(),
+        name.clone(),
         operation.0,
         access,
         wait_timeout,
     )
     .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_collection_cluster",
+        if matches!(response, Ok(true)) { Status::Success } else { Status::Failure },
+        Some(name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        response.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(response, timing, None)
 }
 

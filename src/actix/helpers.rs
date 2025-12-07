@@ -13,6 +13,10 @@ use storage::content_manager::errors::{StorageError, StorageResult};
 use storage::content_manager::toc::request_hw_counter::RequestHwCounter;
 use storage::dispatcher::Dispatcher;
 
+use crate::actix::auth::AuthMethod;
+use crate::actix::requester_context::RequesterContext;
+use crate::tracing::audit_event::{AuditEvent, Status};
+
 pub fn get_request_hardware_counter(
     dispatcher: &Dispatcher,
     collection_name: String,
@@ -47,6 +51,71 @@ pub fn accepted_response(
         time: timing.elapsed().as_secs_f64(),
         usage,
     })
+}
+
+/// Helper function to create and log an audit event
+///
+/// # Arguments
+/// * `auth_method` - Authentication method from ActixAccessWithMethod
+/// * `requester` - Request context from ActixRequesterContext
+/// * `operation` - Operation name (e.g., "create_collection")
+/// * `status` - Operation status
+/// * `collection` - Optional collection name
+/// * `point` - Optional point ID
+/// * `timing` - Optional timing in milliseconds
+/// * `result` - Optional result message
+///
+/// # Example
+/// ```rust
+/// log_audit_event(
+///     &auth_method,
+///     &requester,
+///     "create_collection",
+///     Status::Accepted,
+///     Some(collection.name.clone()),
+///     None,
+///     None,
+///     None,
+/// );
+/// ```
+pub fn log_audit_event(
+    auth_method: &AuthMethod,
+    requester: &RequesterContext,
+    operation: impl Into<String>,
+    status: Status,
+    collection: Option<String>,
+    point: Option<String>,
+    timing: Option<i64>,
+    result: Option<String>,
+) {
+    let (auth_type, subject) = auth_method.to_audit_types();
+    
+    let mut event = AuditEvent::new(
+        auth_type,
+        requester.remote_addr.clone(),
+        requester.local_addr.clone(),
+        operation.into(),
+        status,
+    )
+    .with_subject(subject);
+    
+    if let Some(coll) = collection {
+        event = event.with_collection(coll);
+    }
+    
+    if let Some(pt) = point {
+        event = event.with_point(pt);
+    }
+    
+    if let Some(t) = timing {
+        event = event.with_timing(t);
+    }
+    
+    if let Some(r) = result {
+        event = event.with_result(r);
+    }
+    
+    event.log_info();
 }
 
 pub fn process_response_with_inference_usage<T>(

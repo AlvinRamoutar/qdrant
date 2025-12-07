@@ -19,12 +19,14 @@ use storage::rbac::{Access, AccessRequirements};
 use tokio::time::Instant;
 
 use crate::actix::api::read_params::ReadParams;
-use crate::actix::auth::ActixAccess;
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
 use crate::actix::helpers::{
-    self, get_request_hardware_counter, process_response, process_response_error,
+    self, get_request_hardware_counter, log_audit_event, process_response, process_response_error,
 };
+use crate::actix::requester_context::ActixRequesterContext;
 use crate::common::query;
 use crate::settings::ServiceConfig;
+use crate::tracing::audit_event::Status;
 
 // Configure services
 pub fn config_local_shard_api(cfg: &mut web::ServiceConfig) {
@@ -37,18 +39,33 @@ pub fn config_local_shard_api(cfg: &mut web::ServiceConfig) {
 #[post("/collections/{collection}/shards/{shard}/points")]
 async fn get_points(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     path: web::Path<CollectionShard>,
     request: web::Json<PointRequestInternal>,
     params: web::Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = path.collection.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_points_shard",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // No strict mode verification needed
     let pass = new_unchecked_verification_pass();
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        path.collection.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -56,7 +73,7 @@ async fn get_points(
 
     let records = query::do_get_points(
         dispatcher.toc(&access, &pass),
-        &path.collection,
+        &collection_name,
         request.into_inner(),
         params.consistency,
         params.timeout(),
@@ -72,18 +89,44 @@ async fn get_points(
             .collect::<Vec<_>>()
     });
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_points_shard",
+        if records.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        records.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(records, timing, request_hw_counter.to_rest_api())
 }
 
 #[post("/collections/{collection}/shards/{shard}/points/scroll")]
 async fn scroll_points(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     path: web::Path<CollectionShard>,
     request: web::Json<WithFilter<ScrollRequestInternal>>,
     params: web::Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = path.collection.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "scroll_points_shard",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let WithFilter {
         mut request,
         hash_ring_filter,
@@ -101,7 +144,19 @@ async fn scroll_points(
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "scroll_points_shard",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let request_hw_counter = get_request_hardware_counter(
@@ -148,18 +203,44 @@ async fn scroll_points(
         Err(err) => Err(err),
     };
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "scroll_points_shard",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(result, timing, request_hw_counter.to_rest_api())
 }
 
 #[post("/collections/{collection}/shards/{shard}/points/count")]
 async fn count_points(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     path: web::Path<CollectionShard>,
     request: web::Json<WithFilter<CountRequestInternal>>,
     params: web::Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = path.collection.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "count_points_shard",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let WithFilter {
         mut request,
         hash_ring_filter,
@@ -175,7 +256,19 @@ async fn count_points(
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "count_points_shard",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let request_hw_counter = get_request_hardware_counter(
@@ -219,6 +312,17 @@ async fn count_points(
     }
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "count_points_shard",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(result, timing, request_hw_counter.to_rest_api())
 }
 
@@ -234,22 +338,50 @@ pub struct CleanParams {
 #[post("/collections/{collection}/shards/{shard}/cleanup")]
 async fn cleanup_shard(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     path: web::Path<CollectionShard>,
     params: web::Query<CleanParams>,
 ) -> impl Responder {
+    let timing = Instant::now();
+    let collection_name = path.collection.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "cleanup_shard",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // Nothing to verify here.
     let pass = new_unchecked_verification_pass();
 
-    helpers::time(async move {
+    let result = async move {
         let path = path.into_inner();
         let timeout = params.timeout.map(|sec| Duration::from_secs(sec.get()));
         dispatcher
             .toc(&access, &pass)
             .cleanup_local_shard(&path.collection, path.shard, access, params.wait, timeout)
             .await
-    })
-    .await
+    }
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "cleanup_shard",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[derive(serde::Deserialize, validator::Validate)]

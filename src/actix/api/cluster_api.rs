@@ -9,10 +9,13 @@ use storage::content_manager::consensus_ops::ConsensusOperations;
 use storage::content_manager::errors::StorageError;
 use storage::dispatcher::Dispatcher;
 use storage::rbac::AccessRequirements;
+use tokio::time::Instant;
 use validator::Validate;
 
-use crate::actix::auth::ActixAccess;
-use crate::actix::helpers;
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
+use crate::actix::helpers::{self, log_audit_event};
+use crate::actix::requester_context::ActixRequesterContext;
+use crate::tracing::audit_event::Status;
 
 #[derive(Debug, Deserialize, Validate)]
 struct QueryParams {
@@ -43,16 +46,46 @@ fn cluster_status(
 #[post("/cluster/recover")]
 fn recover_current_peer(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Future<Output = HttpResponse> {
-    // Not a collection level request.
-    let pass = new_unchecked_verification_pass();
+    async move {
+        let timing = Instant::now();
 
-    helpers::time(async move {
-        access.check_global_access(AccessRequirements::new().manage())?;
-        dispatcher.toc(&access, &pass).request_snapshot()?;
-        Ok(true)
-    })
+        log_audit_event(
+            &auth_method,
+            &requester,
+            "recover_current_peer",
+            Status::Accepted,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // Not a collection level request.
+        let pass = new_unchecked_verification_pass();
+
+        let result = async {
+            access.check_global_access(AccessRequirements::new().manage())?;
+            dispatcher.toc(&access, &pass).request_snapshot()?;
+            Ok(true)
+        }
+        .await;
+
+        log_audit_event(
+            &auth_method,
+            &requester,
+            "recover_current_peer",
+            if result.is_ok() { Status::Success } else { Status::Failure },
+            None,
+            None,
+            Some(timing.elapsed().as_millis() as i64),
+            result.as_ref().err().map(|e| format!("{}", e)),
+        );
+
+        helpers::time(async { result }).await
+    }
 }
 
 #[delete("/cluster/peer/{peer_id}")]
@@ -60,47 +93,91 @@ fn remove_peer(
     dispatcher: web::Data<Dispatcher>,
     peer_id: web::Path<u64>,
     Query(params): Query<QueryParams>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Future<Output = HttpResponse> {
-    // Not a collection level request.
-    let pass = new_unchecked_verification_pass();
+    async move {
+        let timing = Instant::now();
+        let peer_id_value = peer_id.into_inner();
 
-    helpers::time(async move {
-        access.check_global_access(AccessRequirements::new().manage())?;
+        log_audit_event(
+            &auth_method,
+            &requester,
+            "remove_peer",
+            Status::Accepted,
+            None,
+            None,
+            None,
+            None,
+        );
 
-        let dispatcher = dispatcher.into_inner();
-        let toc = dispatcher.toc(&access, &pass);
-        let peer_id = peer_id.into_inner();
+        // Not a collection level request.
+        let pass = new_unchecked_verification_pass();
 
-        let has_shards = toc.peer_has_shards(peer_id).await;
-        if !params.force && has_shards {
-            return Err(StorageError::BadRequest {
-                description: format!("Cannot remove peer {peer_id} as there are shards on it"),
-            });
-        }
+        let result = async {
+            access.check_global_access(AccessRequirements::new().manage())?;
 
-        match dispatcher.consensus_state() {
-            Some(consensus_state) => {
-                consensus_state
-                    .propose_consensus_op_with_await(
-                        ConsensusOperations::RemovePeer(peer_id),
-                        params.timeout.map(std::time::Duration::from_secs),
-                    )
-                    .await
+            let dispatcher = dispatcher.into_inner();
+            let toc = dispatcher.toc(&access, &pass);
+
+            let has_shards = toc.peer_has_shards(peer_id_value).await;
+            if !params.force && has_shards {
+                return Err(StorageError::BadRequest {
+                    description: format!("Cannot remove peer {peer_id_value} as there are shards on it"),
+                });
             }
-            None => Err(StorageError::BadRequest {
-                description: "Distributed mode disabled.".to_string(),
-            }),
+
+            match dispatcher.consensus_state() {
+                Some(consensus_state) => {
+                    consensus_state
+                        .propose_consensus_op_with_await(
+                            ConsensusOperations::RemovePeer(peer_id_value),
+                            params.timeout.map(std::time::Duration::from_secs),
+                        )
+                        .await
+                }
+                None => Err(StorageError::BadRequest {
+                    description: "Distributed mode disabled.".to_string(),
+                }),
+            }
         }
-    })
+        .await;
+
+        log_audit_event(
+            &auth_method,
+            &requester,
+            "remove_peer",
+            if result.is_ok() { Status::Success } else { Status::Failure },
+            None,
+            None,
+            Some(timing.elapsed().as_millis() as i64),
+            result.as_ref().err().map(|e| format!("{}", e)),
+        );
+
+        helpers::time(async { result }).await
+    }
 }
 
 #[get("/cluster/metadata/keys")]
 async fn get_cluster_metadata_keys(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> HttpResponse {
-    helpers::time(async move {
+    let timing = Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_cluster_metadata_keys",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let result = async move {
         access.check_global_access(AccessRequirements::new())?;
 
         let keys = dispatcher
@@ -111,17 +188,44 @@ async fn get_cluster_metadata_keys(
             .get_cluster_metadata_keys();
 
         Ok(keys)
-    })
-    .await
+    }
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_cluster_metadata_keys",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[get("/cluster/metadata/keys/{key}")]
 async fn get_cluster_metadata_key(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     key: web::Path<String>,
 ) -> HttpResponse {
-    helpers::time(async move {
+    let timing = Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_cluster_metadata_key",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let result = async move {
         access.check_global_access(AccessRequirements::new())?;
 
         let value = dispatcher
@@ -132,49 +236,118 @@ async fn get_cluster_metadata_key(
             .get_cluster_metadata_key(key.as_ref());
 
         Ok(value)
-    })
-    .await
+    }
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_cluster_metadata_key",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[put("/cluster/metadata/keys/{key}")]
 async fn update_cluster_metadata_key(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     key: web::Path<String>,
     params: Query<MetadataParams>,
     value: web::Json<serde_json::Value>,
 ) -> HttpResponse {
+    let timing = Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_cluster_metadata_key",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
     // Not a collection level request.
     let pass = new_unchecked_verification_pass();
-    helpers::time(async move {
+    
+    let result = async move {
         let toc = dispatcher.toc(&access, &pass);
         access.check_global_access(AccessRequirements::new().write())?;
 
         toc.update_cluster_metadata(key.into_inner(), value.into_inner(), params.wait)
             .await?;
         Ok(true)
-    })
-    .await
+    }
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "update_cluster_metadata_key",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[delete("/cluster/metadata/keys/{key}")]
 async fn delete_cluster_metadata_key(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
     key: web::Path<String>,
     params: Query<MetadataParams>,
 ) -> HttpResponse {
+    let timing = Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_cluster_metadata_key",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
     // Not a collection level request.
     let pass = new_unchecked_verification_pass();
-    helpers::time(async move {
+    
+    let result = async move {
         let toc = dispatcher.toc(&access, &pass);
         access.check_global_access(AccessRequirements::new().write())?;
 
         toc.update_cluster_metadata(key.into_inner(), serde_json::Value::Null, params.wait)
             .await?;
         Ok(true)
-    })
-    .await
+    }
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_cluster_metadata_key",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 // Configure services

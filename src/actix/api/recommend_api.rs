@@ -21,9 +21,11 @@ use tokio::time::Instant;
 
 use super::CollectionPath;
 use super::read_params::ReadParams;
-use crate::actix::auth::ActixAccess;
-use crate::actix::helpers::{self, get_request_hardware_counter, process_response_error};
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
+use crate::actix::helpers::{self, get_request_hardware_counter, log_audit_event, process_response_error};
+use crate::actix::requester_context::ActixRequesterContext;
 use crate::settings::ServiceConfig;
+use crate::tracing::audit_event::Status;
 
 #[post("/collections/{name}/points/recommend")]
 async fn recommend_points(
@@ -32,8 +34,23 @@ async fn recommend_points(
     request: Json<RecommendRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recommend_points",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let RecommendRequest {
         recommend_request,
         shard_key,
@@ -42,14 +59,26 @@ async fn recommend_points(
     let pass = match check_strict_mode(
         &recommend_request,
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "recommend_points",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let shard_selection = match shard_key {
@@ -59,7 +88,7 @@ async fn recommend_points(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -69,7 +98,7 @@ async fn recommend_points(
     let result = dispatcher
         .toc(&access, &pass)
         .recommend(
-            &collection.name,
+            &collection_name,
             recommend_request,
             params.consistency,
             shard_selection,
@@ -84,6 +113,17 @@ async fn recommend_points(
                 .map(api::rest::ScoredPoint::from)
                 .collect_vec()
         });
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recommend_points",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     helpers::process_response(result, timing, request_hw_counter.to_rest_api())
 }
@@ -128,24 +168,51 @@ async fn recommend_batch_points(
     request: Json<RecommendRequestBatch>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recommend_batch_points",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let pass = match check_strict_mode_batch(
         request.searches.iter().map(|i| &i.recommend_request),
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "recommend_batch_points",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -153,7 +220,7 @@ async fn recommend_batch_points(
 
     let result = do_recommend_batch_points(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &collection_name,
         request.into_inner(),
         params.consistency,
         access,
@@ -173,6 +240,17 @@ async fn recommend_batch_points(
             .collect_vec()
     });
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recommend_batch_points",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     helpers::process_response(result, timing, request_hw_counter.to_rest_api())
 }
 
@@ -183,8 +261,23 @@ async fn recommend_point_groups(
     request: Json<RecommendGroupsRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recommend_point_groups",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let RecommendGroupsRequest {
         recommend_group_request,
         shard_key,
@@ -193,14 +286,26 @@ async fn recommend_point_groups(
     let pass = match check_strict_mode(
         &recommend_group_request,
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "recommend_point_groups",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let shard_selection = match shard_key {
@@ -210,7 +315,7 @@ async fn recommend_point_groups(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -218,7 +323,7 @@ async fn recommend_point_groups(
 
     let result = crate::common::query::do_recommend_point_groups(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &collection_name,
         recommend_group_request,
         params.consistency,
         shard_selection,
@@ -227,6 +332,17 @@ async fn recommend_point_groups(
         request_hw_counter.get_counter(),
     )
     .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recommend_point_groups",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     helpers::process_response(result, timing, request_hw_counter.to_rest_api())
 }

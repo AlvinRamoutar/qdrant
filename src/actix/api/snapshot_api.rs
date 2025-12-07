@@ -35,12 +35,14 @@ use validator::Validate;
 use {actix_web_validator as valid, fs_err as fs};
 
 use super::{CollectionPath, StrictCollectionPath};
-use crate::actix::auth::ActixAccess;
-use crate::actix::helpers::{self, HttpError};
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
+use crate::actix::helpers::{self, log_audit_event, HttpError};
+use crate::actix::requester_context::ActixRequesterContext;
 use crate::common;
 use crate::common::collections::*;
 use crate::common::http_client::HttpClient;
 use crate::common::snapshots::try_take_partial_snapshot_recovery_lock;
+use crate::tracing::audit_event::Status;
 
 #[derive(Deserialize, Serialize, JsonSchema, Validate)]
 pub struct SnapshotUploadingParam {
@@ -142,17 +144,45 @@ pub async fn do_get_snapshot(
 async fn list_snapshots(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<String>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let collection_name = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "list_snapshots",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // Nothing to verify.
     let pass = new_unchecked_verification_pass();
 
-    helpers::time(do_list_snapshots(
+    let result = do_list_snapshots(
         dispatcher.toc(&access, &pass),
         access,
         &path,
-    ))
-    .await
+    )
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "list_snapshots",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time(async { result }).await
 }
 
 #[post("/collections/{name}/snapshots")]
@@ -160,23 +190,54 @@ async fn create_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<String>,
     params: valid::Query<SnapshottingParam>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let collection_name = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // Nothing to verify.
     let pass = new_unchecked_verification_pass();
-
-    let collection_name = path.into_inner();
 
     let future = async move {
         do_create_snapshot(
             dispatcher.toc(&access, &pass).clone(),
             access,
-            &collection_name,
+            &path.into_inner(),
         )
         .await
     };
 
-    helpers::time_or_accept(future, params.wait.unwrap_or(true)).await
+    let result = if params.wait.unwrap_or(true) {
+        future.await
+    } else {
+        tokio::spawn(future);
+        Ok(true)
+    };
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    helpers::time_or_accept(async { result }, params.wait.unwrap_or(true)).await
 }
 
 #[post("/collections/{name}/snapshots/upload")]
@@ -186,8 +247,23 @@ async fn upload_snapshot(
     collection: valid::Path<StrictCollectionPath>,
     MultipartForm(form): MultipartForm<SnapshottingForm>,
     params: valid::Query<SnapshotUploadingParam>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "upload_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let wait = params.wait;
 
     // Nothing to verify.
@@ -229,7 +305,20 @@ async fn upload_snapshot(
         .await
     };
 
-    helpers::time_or_accept(future, wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "upload_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[put("/collections/{name}/snapshots/recover")]
@@ -239,8 +328,23 @@ async fn recover_from_snapshot(
     collection: valid::Path<CollectionPath>,
     request: valid::Json<SnapshotRecover>,
     params: valid::Query<SnapshottingParam>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recover_from_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let future = async move {
         let snapshot_recover = request.into_inner();
         let http_client = http_client.client(snapshot_recover.api_key.as_deref())?;
@@ -255,64 +359,186 @@ async fn recover_from_snapshot(
         .await
     };
 
-    helpers::time_or_accept(future, params.wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, params.wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recover_from_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[get("/collections/{name}/snapshots/{snapshot_name}")]
 async fn get_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<(String, String)>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, snapshot_name) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // Nothing to verify.
     let pass = new_unchecked_verification_pass();
 
-    let (collection_name, snapshot_name) = path.into_inner();
-    do_get_snapshot(
+    let (collection_name_inner, snapshot_name_inner) = path.into_inner();
+    let result = do_get_snapshot(
         dispatcher.toc(&access, &pass),
         access,
-        &collection_name,
-        &snapshot_name,
+        &collection_name_inner,
+        &snapshot_name_inner,
     )
-    .await
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[get("/snapshots")]
 async fn list_full_snapshots(
     dispatcher: web::Data<Dispatcher>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "list_full_snapshots",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
-    helpers::time(do_list_full_snapshots(
+    let result = helpers::time(do_list_full_snapshots(
         dispatcher.toc(&access, &pass),
         access,
     ))
-    .await
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "list_full_snapshots",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[post("/snapshots")]
 async fn create_full_snapshot(
     dispatcher: web::Data<Dispatcher>,
     params: valid::Query<SnapshottingParam>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_full_snapshot",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
     let future = async move { do_create_full_snapshot(dispatcher.get_ref(), access).await };
-    helpers::time_or_accept(future, params.wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, params.wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_full_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[get("/snapshots/{snapshot_name}")]
 async fn get_full_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<String>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_full_snapshot",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
     let snapshot_name = path.into_inner();
-    do_get_full_snapshot(dispatcher.toc(&access, &pass), access, &snapshot_name).await
+    let result = do_get_full_snapshot(dispatcher.toc(&access, &pass), access, &snapshot_name).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_full_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[delete("/snapshots/{snapshot_name}")]
@@ -320,14 +546,41 @@ async fn delete_full_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<String>,
     params: valid::Query<SnapshottingParam>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_full_snapshot",
+        Status::Accepted,
+        None,
+        None,
+        None,
+        None,
+    );
+
     let future = async move {
         let snapshot_name = path.into_inner();
         do_delete_full_snapshot(dispatcher.get_ref(), access, &snapshot_name).await
     };
 
-    helpers::time_or_accept(future, params.wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, params.wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_full_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        None,
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[delete("/collections/{name}/snapshots/{snapshot_name}")]
@@ -335,8 +588,23 @@ async fn delete_collection_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<(String, String)>,
     params: valid::Query<SnapshottingParam>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _snapshot_name) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_collection_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let future = async move {
         let (collection_name, snapshot_name) = path.into_inner();
 
@@ -349,15 +617,43 @@ async fn delete_collection_snapshot(
         .await
     };
 
-    helpers::time_or_accept(future, params.wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, params.wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_collection_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[get("/collections/{collection}/shards/{shard}/snapshots")]
 async fn list_shard_snapshots(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<(String, ShardId)>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "list_shard_snapshots",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
@@ -371,7 +667,20 @@ async fn list_shard_snapshots(
     )
     .map_err(Into::into);
 
-    helpers::time(future).await
+    let result = helpers::time(future).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "list_shard_snapshots",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[post("/collections/{collection}/shards/{shard}/snapshots")]
@@ -379,8 +688,23 @@ async fn create_shard_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<(String, ShardId)>,
     query: web::Query<SnapshottingParam>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_shard_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
@@ -392,27 +716,68 @@ async fn create_shard_snapshot(
         shard,
     );
 
-    helpers::time_or_accept(future, query.wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, query.wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_shard_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[get("/collections/{collection}/shards/{shard}/snapshot")]
 async fn stream_shard_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<(String, ShardId)>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> Result<SnapshotStream, HttpError> {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "stream_shard_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
     let (collection, shard) = path.into_inner();
-    Ok(common::snapshots::stream_shard_snapshot(
+    let result = common::snapshots::stream_shard_snapshot(
         dispatcher.toc(&access, &pass).clone(),
         access,
         collection,
         shard,
         None,
     )
-    .await?)
+    .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "stream_shard_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    Ok(result?)
 }
 
 // TODO: `PUT` (same as `recover_from_snapshot`) or `POST`!?
@@ -423,8 +788,23 @@ async fn recover_shard_snapshot(
     path: web::Path<(String, ShardId)>,
     query: web::Query<SnapshottingParam>,
     web::Json(request): web::Json<ShardSnapshotRecover>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recover_shard_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
@@ -447,7 +827,20 @@ async fn recover_shard_snapshot(
         Ok(true)
     };
 
-    helpers::time_or_accept(future, query.wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, query.wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recover_shard_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 // TODO: `POST` (same as `upload_snapshot`) or `PUT`!?
@@ -457,8 +850,23 @@ async fn upload_shard_snapshot(
     path: web::Path<(String, ShardId)>,
     query: web::Query<SnapshotUploadingParam>,
     MultipartForm(form): MultipartForm<SnapshottingForm>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "upload_shard_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
@@ -513,15 +921,43 @@ async fn upload_shard_snapshot(
     })
     .map(|res| res.map_err(Into::into).and_then(|res| res));
 
-    helpers::time_or_accept(future, wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "upload_shard_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[get("/collections/{collection}/shards/{shard}/snapshots/{snapshot}")]
 async fn download_shard_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<(String, ShardId, String)>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> Result<impl Responder, HttpError> {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id, _snapshot_name) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "download_shard_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
@@ -539,10 +975,22 @@ async fn download_shard_snapshot(
         .await
         .get_shard_snapshot_path(collection.snapshots_path(), shard, &snapshot)
         .await?;
-    let snapshot_stream = snapshots_storage_manager
+    let snapshot_stream_result = snapshots_storage_manager
         .get_snapshot_stream(&snapshot_path)
-        .await?;
-    Ok(snapshot_stream)
+        .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "download_shard_snapshot",
+        if snapshot_stream_result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        snapshot_stream_result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    Ok(snapshot_stream_result?)
 }
 
 #[delete("/collections/{collection}/shards/{shard}/snapshots/{snapshot}")]
@@ -550,8 +998,23 @@ async fn delete_shard_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<(String, ShardId, String)>,
     query: web::Query<SnapshottingParam>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id, _snapshot_name) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_shard_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
@@ -566,7 +1029,20 @@ async fn delete_shard_snapshot(
     .map_ok(|_| true)
     .map_err(Into::into);
 
-    helpers::time_or_accept(future, query.wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, query.wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "delete_shard_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[post("/collections/{collection}/shards/{shard}/snapshot/partial/create")]
@@ -574,24 +1050,50 @@ async fn create_partial_snapshot(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<(String, ShardId)>,
     manifest: web::Json<SnapshotManifest>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> Result<SnapshotStream, HttpError> {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_partial_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let (collection, shard) = path.into_inner();
     let manifest = manifest.into_inner();
 
     // nothing to verify.
     let pass = new_unchecked_verification_pass();
 
-    let snapshot_stream = common::snapshots::stream_shard_snapshot(
+    let snapshot_stream_result = common::snapshots::stream_shard_snapshot(
         dispatcher.toc(&access, &pass).clone(),
         access,
         collection,
         shard,
         Some(manifest),
     )
-    .await?;
+    .await;
 
-    Ok(snapshot_stream)
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "create_partial_snapshot",
+        if snapshot_stream_result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        snapshot_stream_result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    Ok(snapshot_stream_result?)
 }
 
 #[post("/collections/{collection}/shards/{shard}/snapshot/partial/recover")]
@@ -600,8 +1102,23 @@ async fn recover_partial_snapshot(
     path: web::Path<(String, ShardId)>,
     query: web::Query<SnapshotUploadingParam>,
     MultipartForm(form): MultipartForm<SnapshottingForm>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recover_partial_snapshot",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let (collection, shard) = path.into_inner();
 
     let SnapshotUploadingParam {
@@ -620,10 +1137,30 @@ async fn recover_partial_snapshot(
         Ok(recovery_lock) => recovery_lock,
 
         Err(StorageError::ShardUnavailable { .. }) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "recover_partial_snapshot",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(timing.elapsed().as_millis() as i64),
+                Some("Already in progress".to_string()),
+            );
             return helpers::already_in_progress_response();
         }
 
         Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "recover_partial_snapshot",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
             return helpers::process_response_error(err, tokio::time::Instant::now(), None);
         }
     };
@@ -640,6 +1177,16 @@ async fn recover_partial_snapshot(
             if let Some(checksum) = checksum {
                 let snapshot_checksum = sha_256::hash_file(form.snapshot.file.path()).await?;
                 if !sha_256::hashes_equal(&snapshot_checksum, &checksum) {
+                    log_audit_event(
+                        &auth_method,
+                        &requester,
+                        "recover_partial_snapshot",
+                        Status::Failure,
+                        Some(collection_name),
+                        None,
+                        Some(timing.elapsed().as_millis() as i64),
+                        Some(format!("{}", err)),
+                    );
                     return Err(StorageError::checksum_mismatch(snapshot_checksum, checksum));
                 }
             }
@@ -671,7 +1218,20 @@ async fn recover_partial_snapshot(
     })
     .map(|res| res.map_err(Into::into).and_then(|res| res));
 
-    helpers::time_or_accept(future, wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recover_partial_snapshot",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -687,8 +1247,23 @@ async fn recover_partial_snapshot_from(
     path: web::Path<(String, ShardId)>,
     query: web::Query<SnapshottingParam>,
     web::Json(request): web::Json<PartialSnapshotRecoverFrom>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name_str, _shard_id_for_log) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recover_partial_snapshot_from",
+        Status::Accepted,
+        Some(collection_name_str.clone()),
+        None,
+        None,
+        None,
+    );
+
     let (collection_name, shard_id) = path.into_inner();
     let PartialSnapshotRecoverFrom { peer_url, api_key } = request;
     let SnapshottingParam { wait } = query.into_inner();
@@ -708,10 +1283,30 @@ async fn recover_partial_snapshot_from(
         Ok(recovery_lock) => recovery_lock,
 
         Err(StorageError::ShardUnavailable { .. }) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "recover_partial_snapshot_from",
+                Status::Failure,
+                Some(collection_name_str),
+                None,
+                Some(timing.elapsed().as_millis() as i64),
+                Some("Already in progress".to_string()),
+            );
             return helpers::already_in_progress_response();
         }
 
         Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "recover_partial_snapshot_from",
+                Status::Failure,
+                Some(collection_name_str),
+                None,
+                Some(timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
             return helpers::process_response_error(err, tokio::time::Instant::now(), None);
         }
     };
@@ -807,15 +1402,43 @@ async fn recover_partial_snapshot_from(
     })
     .map(|res| res.map_err(Into::into).and_then(|res| res));
 
-    helpers::time_or_accept(future, wait.unwrap_or(true)).await
+    let result = helpers::time_or_accept(future, wait.unwrap_or(true)).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "recover_partial_snapshot_from",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name_str),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 #[get("/collections/{collection}/shards/{shard}/snapshot/partial/manifest")]
 async fn get_partial_snapshot_manifest(
     dispatcher: web::Data<Dispatcher>,
     path: web::Path<(String, ShardId)>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let timing = tokio::time::Instant::now();
+    let (collection_name, _shard_id) = path.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_partial_snapshot_manifest",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let (collection, shard) = path.into_inner();
     let pass = new_unchecked_verification_pass();
 
@@ -833,7 +1456,20 @@ async fn get_partial_snapshot_manifest(
             .map_err(StorageError::from)
     };
 
-    helpers::time(future).await
+    let result = helpers::time(future).await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_partial_snapshot_manifest",
+        if result.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(timing.elapsed().as_millis() as i64),
+        result.as_ref().err().map(|e| format!("{}", e)),
+    );
+
+    result
 }
 
 // Configure services

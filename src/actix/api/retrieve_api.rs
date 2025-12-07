@@ -23,12 +23,14 @@ use validator::Validate;
 
 use super::CollectionPath;
 use super::read_params::ReadParams;
-use crate::actix::auth::ActixAccess;
+use crate::actix::auth::{ActixAccess, ActixAccessWithMethod};
 use crate::actix::helpers::{
-    get_request_hardware_counter, process_response, process_response_error,
+    get_request_hardware_counter, log_audit_event, process_response, process_response_error,
 };
+use crate::actix::requester_context::ActixRequesterContext;
 use crate::common::query::do_get_points;
 use crate::settings::ServiceConfig;
+use crate::tracing::audit_event::Status;
 
 #[derive(Deserialize, Validate)]
 struct PointPath {
@@ -74,30 +76,68 @@ async fn get_point(
     point: Path<PointPath>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+    let point_id_str = point.id.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_point",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        Some(point_id_str.clone()),
+        None,
+        None,
+    );
+
     let pass = match check_strict_mode_timeout(
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(p) => p,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "get_point",
+                Status::Failure,
+                Some(collection_name),
+                Some(point_id_str),
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let Ok(point_id) = point.id.parse::<PointIdType>() else {
         let err = StorageError::BadInput {
             description: format!("Can not recognize \"{}\" as point id", point.id),
         };
+        log_audit_event(
+            &auth_method,
+            &requester,
+            "get_point",
+            Status::Failure,
+            Some(collection_name),
+            Some(point_id_str),
+            Some(overall_timing.elapsed().as_millis() as i64),
+            Some(format!("{}", err)),
+        );
         return process_response_error(err, Instant::now(), None);
     };
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -105,7 +145,7 @@ async fn get_point(
 
     let res = do_get_point(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &collection_name,
         point_id,
         params.consistency,
         params.timeout(),
@@ -120,6 +160,17 @@ async fn get_point(
     })
     .map(api::rest::Record::from);
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_point",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        Some(point_id_str),
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(res, timing, request_hw_counter.to_rest_api())
 }
 
@@ -130,18 +181,45 @@ async fn get_points(
     request: Json<PointRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_points",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let pass = match check_strict_mode_timeout(
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(p) => p,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "get_points",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let PointRequest {
@@ -156,7 +234,7 @@ async fn get_points(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -164,7 +242,7 @@ async fn get_points(
 
     let res = do_get_points(
         dispatcher.toc(&access, &pass),
-        &collection.name,
+        &collection_name,
         point_request,
         params.consistency,
         params.timeout(),
@@ -180,6 +258,17 @@ async fn get_points(
     })
     .await;
 
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "get_points",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
+
     process_response(res, timing, request_hw_counter.to_rest_api())
 }
 
@@ -190,8 +279,23 @@ async fn scroll_points(
     request: Json<ScrollRequest>,
     params: Query<ReadParams>,
     service_config: web::Data<ServiceConfig>,
-    ActixAccess(access): ActixAccess,
+    ActixAccessWithMethod { access, auth_method }: ActixAccessWithMethod,
+    ActixRequesterContext(requester): ActixRequesterContext,
 ) -> impl Responder {
+    let overall_timing = Instant::now();
+    let collection_name = collection.name.clone();
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "scroll_points",
+        Status::Accepted,
+        Some(collection_name.clone()),
+        None,
+        None,
+        None,
+    );
+
     let ScrollRequest {
         scroll_request,
         shard_key,
@@ -200,14 +304,26 @@ async fn scroll_points(
     let pass = match check_strict_mode(
         &scroll_request,
         params.timeout_as_secs(),
-        &collection.name,
+        &collection_name,
         &dispatcher,
         &access,
     )
     .await
     {
         Ok(pass) => pass,
-        Err(err) => return process_response_error(err, Instant::now(), None),
+        Err(err) => {
+            log_audit_event(
+                &auth_method,
+                &requester,
+                "scroll_points",
+                Status::Failure,
+                Some(collection_name),
+                None,
+                Some(overall_timing.elapsed().as_millis() as i64),
+                Some(format!("{}", err)),
+            );
+            return process_response_error(err, Instant::now(), None);
+        }
     };
 
     let shard_selection = match shard_key {
@@ -217,7 +333,7 @@ async fn scroll_points(
 
     let request_hw_counter = get_request_hardware_counter(
         &dispatcher,
-        collection.name.clone(),
+        collection_name.clone(),
         service_config.hardware_reporting(),
         None,
     );
@@ -226,7 +342,7 @@ async fn scroll_points(
     let res = dispatcher
         .toc(&access, &pass)
         .scroll(
-            &collection.name,
+            &collection_name,
             scroll_request,
             params.consistency,
             params.timeout(),
@@ -235,6 +351,17 @@ async fn scroll_points(
             request_hw_counter.get_counter(),
         )
         .await;
+
+    log_audit_event(
+        &auth_method,
+        &requester,
+        "scroll_points",
+        if res.is_ok() { Status::Success } else { Status::Failure },
+        Some(collection_name),
+        None,
+        Some(overall_timing.elapsed().as_millis() as i64),
+        res.as_ref().err().map(|e| format!("{}", e)),
+    );
 
     process_response(res, timing, request_hw_counter.to_rest_api())
 }

@@ -71,6 +71,21 @@ impl AuthKeys {
         }
     }
 
+    /// Get the read-write API key if configured
+    pub fn read_write_key(&self) -> Option<&str> {
+        self.read_write.as_deref()
+    }
+
+    /// Get the read-only API key if configured
+    pub fn read_only_key(&self) -> Option<&str> {
+        self.read_only.as_deref()
+    }
+
+    /// Get the JWT parser if configured
+    pub fn jwt_parser(&self) -> Option<&JwtParser> {
+        self.jwt_parser.as_ref()
+    }
+
     /// Validate that the specified request is allowed for given keys.
     pub async fn validate_request<'a>(
         &self,
